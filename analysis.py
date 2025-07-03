@@ -2,7 +2,7 @@
 """
 Created on Thu Feb 13 15:54:48 2025
 
-@author: bsmsa18b
+@author: N Velichkova
 """
 
 
