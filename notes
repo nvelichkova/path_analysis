@@ -1,0 +1,4 @@
+Use data_selection.py to select relevant columns from your data.
+Use column_filter.py to filter data based on frame numbers.
+Use trajectory_plots.py to visualize and export trajectory data.
+Use analysis.py for statistical analysis on exported data.

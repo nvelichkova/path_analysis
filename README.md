@@ -17,7 +17,6 @@ This repository contains the code for analyzing and visualizing trajectory data.
 
 ## Requirements
 - Python 3.6+
-- (List any required packages here)
 
-## License
-MIT License 
+Detailed method secton of the Descriptive statistics of larval trajectory in: 
+Marina E WosniackDylan FestaNan HuJulijana GjorgjievaJimena Berni (2022) Adaptation of Drosophila larva foraging in response to changes in food resources eLife 11:e75826.
