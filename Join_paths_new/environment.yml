@@ -1,0 +1,39 @@
+# environment.yml
+# Conda environment for the larva trajectory-joining tool (join_paths).
+#
+# Create it with:
+#     conda env create -f environment.yml
+# Activate:
+#     conda activate join_paths
+# Then run from this folder:
+#     python run_join_paths.py        # batch / Spyder-style driver
+#     python join_paths_gui.py        # GUI
+#
+# Notes
+# - dtaidistance and pyarrow are pulled from conda-forge so you get
+#   precompiled win-64 binaries (no C compiler needed).
+# - tkinter ships with the conda `python` package, so the GUI needs nothing extra.
+# - Verify the fast C path is active after install:
+#       python -c "from dtaidistance import dtw; dtw.try_import_c(verbose=True)"
+
+name: join_paths
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11          # stable, wide wheel/binary availability
+  - numpy>=1.24,<2.1     # <2.1 keeps scipy/pandas pickle compatibility predictable
+  - pandas>=2.0
+  - scipy>=1.10          # KDTree, linear_sum_assignment, sparse.csgraph
+  - joblib>=1.3
+  - dtaidistance>=2.3.11 # DTW; conda-forge ships the compiled (fast) build for win-64
+  - openpyxl>=3.1        # .xlsx read/write
+  - pyarrow>=14          # .parquet save format
+  - matplotlib-base>=3.7 # only needed because dtw_visualisation is imported (see note below)
+  - spyder               # optional: your usual IDE; drop this line if you launch Spyder elsewhere
+
+# Optional pip-only extras (uncomment if you want them):
+#  - pip
+#  - pip:
+#      - tqdm

@@ -24,12 +24,12 @@ class TrajectoryViewer(QMainWindow):
         self.epsilon = 2.5
         self.data = None
         self.current_larva = 0
-        self.global_bounds = None  # Add global bounds attribute
-        self.dot_size = 4  # Default dot size for turn points
+        self.global_bounds = None
+        self.dot_size = 4
         self._zoom_selector = None
         self._zoom_active = False
-        self._zoomed_in = False  # Track if user is zoomed in
-        self._custom_limits = None  # Store custom axis limits if set
+        self._zoomed_in = False
+        self._custom_limits = None
         self.setup_ui()
         self.csv_filename = None
 
@@ -41,7 +41,6 @@ class TrajectoryViewer(QMainWindow):
         processed_data = []
         n_larvae = data_aux.shape[1] - 1
         
-        # Initialize global min/max values
         global_min_x = float('inf')
         global_max_x = float('-inf')
         global_min_y = float('inf')
@@ -59,13 +58,13 @@ class TrajectoryViewer(QMainWindow):
             y_clean = y_data[valid_mask]
             coords = np.column_stack([x_clean, y_clean])
             
-            # Update global bounds
-            global_min_x = min(global_min_x, np.min(x_clean))
-            global_max_x = max(global_max_x, np.max(x_clean))
-            global_min_y = min(global_min_y, np.min(y_clean))
-            global_max_y = max(global_max_y, np.max(y_clean))
+            if len(x_clean) > 0:
+                global_min_x = min(global_min_x, np.min(x_clean))
+                global_max_x = max(global_max_x, np.max(x_clean))
+                global_min_y = min(global_min_y, np.min(y_clean))
+                global_max_y = max(global_max_y, np.max(y_clean))
             
-            distances = np.sqrt(np.sum(np.diff(coords, axis=0)**2, axis=1))
+            distances = np.sqrt(np.sum(np.diff(coords, axis=0)**2, axis=1)) if len(coords) > 1 else np.array([])
             
             processed_data.append({
                 'coords': coords,
@@ -74,15 +73,12 @@ class TrajectoryViewer(QMainWindow):
                 'total_distance': np.sum(distances)
             })
         
-        # Find the absolute min and max across both dimensions
         overall_min = min(global_min_x, global_min_y)
         overall_max = max(global_max_x, global_max_y)
         
-        # Add padding (10%)
         total_range = overall_max - overall_min
         padding = total_range * 0.1
         
-        # Use the same min and max for both axes
         self.global_bounds = {
             'x_min': overall_min - padding,
             'x_max': overall_max + padding,
@@ -90,7 +86,6 @@ class TrajectoryViewer(QMainWindow):
             'y_max': overall_max + padding
         }
         
-        # Set axis spin boxes to global bounds
         self.xmin_spin.setValue(self.global_bounds['x_min'])
         self.xmax_spin.setValue(self.global_bounds['x_max'])
         self.ymin_spin.setValue(self.global_bounds['y_min'])
@@ -114,28 +109,23 @@ class TrajectoryViewer(QMainWindow):
         self.setWindowTitle('Trajectory Analyzer')
         self.setGeometry(100, 100, 1200, 800)
     
-        # Add menu bar first
         menubar = self.menuBar()
         file_menu = menubar.addMenu('File')
         open_action = file_menu.addAction('Open CSV')
         open_action.triggered.connect(self.open_file)
 
-        # Add status bar after menu bar
         self.statusBar = self.statusBar()
         self.statusBar.showMessage('No file loaded')
     
-        # Main widget setup
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
     
-        # Figure setup
         self.fig = Figure(figsize=(8, 8))
         self.canvas = FigureCanvas(self.fig)
         self.ax = self.fig.add_subplot(111)
         layout.addWidget(self.canvas)
     
-        # Controls layout
         controls = QHBoxLayout()
     
         # Epsilon slider
@@ -241,7 +231,6 @@ class TrajectoryViewer(QMainWindow):
         layout.addLayout(controls)
 
     def export_plot(self):
-        # Deactivate and remove RectangleSelector before saving
         if self._zoom_selector is not None:
             self._zoom_selector.set_active(False)
             self._zoom_selector = None
@@ -261,74 +250,73 @@ class TrajectoryViewer(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(
             self, 'Export Stats', default_filename, 'Excel Files (*.xlsx)')
         if filename:
-            # Create a Pandas Excel writer using openpyxl as the engine
+            original_larva = self.current_larva  # save so we can restore at the end
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                # Export main statistics
                 all_data = []
                 for i in range(len(self.data)):
                     self.current_larva = i
+                    coords = self.data[i]['coords']
+                    if len(coords) < 2:  # skip empty/trivial larvae
+                        print(f"Skipping larva {i}: insufficient data")
+                        continue
                     stats, simple_traj = self.calculate_stats()
                     stats['larva_idx'] = i
                     all_data.append(stats)
                 
-                # Write main stats to the first sheet
                 df_stats = pd.DataFrame(all_data)
                 df_stats.to_excel(writer, sheet_name='Summary_Stats', index=False)
                 
-                # Export turning angles for each larva
                 for i in range(len(self.data)):
                     self.current_larva = i
                     coords = self.data[i]['coords']
+                    if len(coords) < 2:  # skip empty/trivial larvae
+                        continue
                     simple_traj = rdp(coords, epsilon=self.epsilon)
                     turning_angles = self.calculate_turning_angles(simple_traj)
                     
-                    # Convert angles from radians to degrees
                     turning_angles_deg = turning_angles * 180 / np.pi
                     
-                    # Create lists for CW and CCW turns
                     cw_turns = []
                     ccw_turns = []
                     
-                    # Separate turns by direction while maintaining original order
                     for turn_num, angle in enumerate(turning_angles_deg, 1):
-                        if angle < 0:  # CW turn
+                        if angle < 0:
                             cw_turns.append({
                                 'original_turn_number': turn_num,
                                 'angle_degrees': angle,
                                 'direction': 'CW'
                             })
-                        else:  # CCW turn
+                        else:
                             ccw_turns.append({
                                 'original_turn_number': turn_num,
                                 'angle_degrees': angle,
                                 'direction': 'CCW'
                             })
                     
-                    # Create separate DataFrames for CW and CCW turns
                     df_cw = pd.DataFrame(cw_turns)
                     df_ccw = pd.DataFrame(ccw_turns)
                     
-                    # Add sequential numbering within each direction
                     if not df_cw.empty:
                         df_cw['direction_turn_number'] = range(1, len(df_cw) + 1)
                     if not df_ccw.empty:
                         df_ccw['direction_turn_number'] = range(1, len(df_ccw) + 1)
                     
-                    # Combine the DataFrames with CW first, then CCW
                     df_angles = pd.concat([df_cw, df_ccw], ignore_index=True)
                     
-                    # Reorder columns for better readability
-                    df_angles = df_angles[[
-                        'direction',
-                        'direction_turn_number',
-                        'original_turn_number',
-                        'angle_degrees'
-                    ]]
+                    # Only reorder columns if there is data (concat of two empty DFs has no columns)
+                    if not df_angles.empty:
+                        df_angles = df_angles[[
+                            'direction',
+                            'direction_turn_number',
+                            'original_turn_number',
+                            'angle_degrees'
+                        ]]
                     
-                    # Write to a separate sheet for each larva
                     sheet_name = f'Larva_{i}_Angles'
                     df_angles.to_excel(writer, sheet_name=sheet_name, index=False)
                 
+            self.current_larva = original_larva  # restore original selection
+            self.update_plot()
             print(f"Stats and turning angles exported to {filename}")
                 
     def update_epsilon(self):
@@ -346,44 +334,39 @@ class TrajectoryViewer(QMainWindow):
         self.update_plot()
 
     def calculate_stats(self):
-       coords = self.data[self.current_larva]['coords']
-       #distances = self.data[self.current_larva]['distances']
-       distances = np.sqrt(np.sum(np.diff(coords, axis=0)**2, axis=1)) * (1/self.scale)  # distances in mm
+        coords = self.data[self.current_larva]['coords']
+        distances = np.sqrt(np.sum(np.diff(coords, axis=0)**2, axis=1)) * (1/self.scale)
 
-
-       time = np.arange(len(coords)) * 0.5  # 2fps sampling
-       
-       # Basic RDP stats
-       simple_traj = rdp(coords, epsilon=self.epsilon)
-       turning_angles = self.calculate_turning_angles(simple_traj)
-       
-       # Calculate velocity and heading
-       velocity = self.calculate_velocity(coords[:, 0], coords[:, 1], time)
-       heading = self.calculate_heading(velocity)
-       speed = np.linalg.norm(velocity, axis=1)
-       turn_rate = self.calculate_turn_rate(heading, time[1:])
-       
-       # Calculate total distance in different units
-       total_distance = np.sum(distances)  # in mm
-       total_distance_cm = total_distance / 10  # Convert to cm
-       
-       stats = {
-           'total_distance': total_distance,
-           'total_distance_cm': total_distance_cm,
-           'avg_step': np.mean(distances),
-           'max_step': np.max(distances),
-           'std_step': np.std(distances),
-           'total_turns': len(simple_traj) - 2,
-           'mean_turn_angle': np.mean(np.abs(turning_angles)) * 180 / np.pi if len(turning_angles) > 0 else 0,
-           'average_speed': np.mean(speed),
-           'average_turn_rate': np.mean(np.abs(turn_rate)) if len(turn_rate) > 0 else 0,
-           'handedness_index': self.calculate_handedness_index(turning_angles),
-           'turns_per_minute': self.calculate_turns_per_minute(simple_traj, len(coords)),
-           'ccw_turns': np.sum(turning_angles > 0) if len(turning_angles) > 0 else 0,
-           'cw_turns': np.sum(turning_angles < 0) if len(turning_angles) > 0 else 0
-       }
-       
-       return stats, simple_traj
+        time = np.arange(len(coords)) * 0.5  # 2fps sampling
+        
+        simple_traj = rdp(coords, epsilon=self.epsilon)
+        turning_angles = self.calculate_turning_angles(simple_traj)
+        
+        velocity = self.calculate_velocity(coords[:, 0], coords[:, 1], time)
+        heading = self.calculate_heading(velocity)
+        speed = np.linalg.norm(velocity, axis=1)
+        turn_rate = self.calculate_turn_rate(heading, time[1:])
+        
+        total_distance = np.sum(distances)
+        total_distance_cm = total_distance / 10
+        
+        stats = {
+            'total_distance': total_distance,
+            'total_distance_cm': total_distance_cm,
+            'avg_step': np.mean(distances) if len(distances) > 0 else 0,
+            'max_step': np.max(distances) if len(distances) > 0 else 0,
+            'std_step': np.std(distances) if len(distances) > 0 else 0,
+            'total_turns': len(simple_traj) - 2,
+            'mean_turn_angle': np.mean(np.abs(turning_angles)) * 180 / np.pi if len(turning_angles) > 0 else 0,
+            'average_speed': np.mean(speed) if len(speed) > 0 else 0,
+            'average_turn_rate': np.mean(np.abs(turn_rate)) if len(turn_rate) > 0 else 0,
+            'handedness_index': self.calculate_handedness_index(turning_angles),
+            'turns_per_minute': self.calculate_turns_per_minute(simple_traj, len(coords)),
+            'ccw_turns': np.sum(turning_angles > 0) if len(turning_angles) > 0 else 0,
+            'cw_turns': np.sum(turning_angles < 0) if len(turning_angles) > 0 else 0
+        }
+        
+        return stats, simple_traj
 
     def calculate_velocity(self, x, y, time):
         dx = np.diff(x)
@@ -438,21 +421,18 @@ class TrajectoryViewer(QMainWindow):
         return np.mean(turns_per_window)
 
     def update_plot(self):
-        # Save current axis limits if zoomed in
         if self._zoomed_in:
             xlim = self.ax.get_xlim()
             ylim = self.ax.get_ylim()
         self.ax.clear()
         coords = self.data[self.current_larva]['coords']
         stats, simple_traj = self.calculate_stats()
-        # Plot trajectories based on checkboxes
         if self.show_original_cb.isChecked():
             self.ax.plot(coords[:, 0], coords[:, 1], 'gray', alpha=0.5, label='Original')
         if self.show_simplified_cb.isChecked():
             self.ax.plot(simple_traj[:, 0], simple_traj[:, 1], 'b-', label='Simplified')
         if self.show_turn_points_cb.isChecked():
             self.ax.plot(simple_traj[:, 0], simple_traj[:, 1], 'ro', label='Turn Points', markersize=self.dot_size)
-        # Set axis limits: custom > zoom > global
         if self._custom_limits is not None:
             xmin, xmax, ymin, ymax = self._custom_limits
             self.ax.set_xlim(xmin, xmax)
@@ -464,7 +444,6 @@ class TrajectoryViewer(QMainWindow):
             self.ax.set_xlim(self.global_bounds['x_min'], self.global_bounds['x_max'])
             self.ax.set_ylim(self.global_bounds['y_min'], self.global_bounds['y_max'])
         self.ax.set_aspect('equal')
-        # Update stats text
         stats_text = (
             f"Movement Statistics:\n"
             f"Total points: {self.data[self.current_larva]['total_points']}\n"
@@ -493,20 +472,17 @@ class TrajectoryViewer(QMainWindow):
     def toggle_zoom(self, checked):
         if checked:
             self._zoom_active = True
-            # Remove previous selector if it exists
             if self._zoom_selector is not None:
                 self._zoom_selector.set_active(False)
                 self._zoom_selector = None
-            # Clear any previous rectangle
             for patch in list(self.ax.patches):
                 patch.remove()
-            # Remove any leftover artists (handles, etc.)
             for artist in list(self.ax.artists):
                 artist.remove()
             self._zoom_selector = RectangleSelector(
                 self.ax, self.on_select,
                 useblit=True,
-                button=[1],  # left mouse button
+                button=[1],
                 minspanx=5, minspany=5,
                 spancoords='pixels', interactive=False
             )
@@ -516,7 +492,6 @@ class TrajectoryViewer(QMainWindow):
             if self._zoom_selector is not None:
                 self._zoom_selector.set_active(False)
                 self._zoom_selector = None
-            # Also clear any leftover rectangle/handles when zoom is turned off
             for patch in list(self.ax.patches):
                 patch.remove()
             for artist in list(self.ax.artists):
@@ -538,13 +513,11 @@ class TrajectoryViewer(QMainWindow):
             self.ax.set_xlim(self.global_bounds['x_min'], self.global_bounds['x_max'])
             self.ax.set_ylim(self.global_bounds['y_min'], self.global_bounds['y_max'])
             self.ax.figure.canvas.draw()
-        # Deactivate zoom if active
         if self._zoom_selector is not None:
             self._zoom_selector.set_active(False)
             self._zoom_selector = None
         self._zoom_active = False
         self._zoomed_in = False
-        # Also clear any leftover rectangle/handles when resetting zoom
         for patch in list(self.ax.patches):
             patch.remove()
         for artist in list(self.ax.artists):
@@ -557,11 +530,11 @@ class TrajectoryViewer(QMainWindow):
         ymin = self.ymin_spin.value()
         ymax = self.ymax_spin.value()
         self._custom_limits = (xmin, xmax, ymin, ymax)
-        self._zoomed_in = False  # Custom limits override zoom
+        self._zoomed_in = False
         self.update_plot()
 
 if __name__ == '__main__':
-   app = QApplication(sys.argv)
-   viewer = TrajectoryViewer()
-   viewer.show()
-   sys.exit(app.exec_())
+    app = QApplication(sys.argv)
+    viewer = TrajectoryViewer()
+    viewer.show()
+    sys.exit(app.exec_())

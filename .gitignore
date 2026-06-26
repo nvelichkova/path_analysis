@@ -1,2 +1,6 @@
 paths/main/trajectory_processing.log
-paths/Data_01/Input/unattached/Bleach_n2.csv 
+paths/Data_01/Input/unattached/Bleach_n2.csv __pycache__/
+Join_paths_new/trajectory_processing.txt
+
+__pycache__/
+Join_paths_new/trajectory_processing.log
