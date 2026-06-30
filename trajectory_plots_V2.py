@@ -7,7 +7,8 @@ Created on Thu Feb 13 15:18:13 2025
 
 import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                           QWidget, QSlider, QPushButton, QLabel, QComboBox, QFileDialog, QCheckBox, QSpinBox, QDoubleSpinBox, QMessageBox)
+                           QWidget, QSlider, QPushButton, QLabel, QComboBox, QFileDialog, QCheckBox, QSpinBox, QDoubleSpinBox, QMessageBox, QProgressDialog)
+from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.widgets import RectangleSelector
@@ -30,6 +31,7 @@ class TrajectoryViewer(QMainWindow):
         self._zoom_active = False
         self._zoomed_in = False
         self._custom_limits = None
+        self.loaded_files = []   # list of dicts: {name, path, data, bounds}
         self.setup_ui()
         self.csv_filename = None
 
@@ -97,13 +99,124 @@ class TrajectoryViewer(QMainWindow):
         filename, _ = QFileDialog.getOpenFileName(
             self, 'Open CSV', '', 'CSV Files (*.csv)')
         if filename:
-            self.csv_filename = os.path.splitext(os.path.basename(filename))[0]
-            self.data = self.load_data(filename)
-            self.current_larva = 0
-            self.larva_combo.clear()
-            self.larva_combo.addItems([f'Larva {i}' for i in range(len(self.data))])
-            self.statusBar.showMessage(f'Current file: {filename}')
-            self.update_plot()
+            try:
+                entry = self._load_entry(filename)
+            except Exception as e:
+                QMessageBox.warning(self, 'Load failed', f'{os.path.basename(filename)}: {e}')
+                return
+            self._set_loaded_files([entry])
+
+    def _make_progress(self, title, maximum):
+        """Create a modal progress dialog with a Cancel button."""
+        dlg = QProgressDialog(title, 'Cancel', 0, maximum, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)   # show immediately rather than after a delay
+        dlg.setAutoClose(True)
+        dlg.setValue(0)
+        return dlg
+
+    def load_folder(self):
+        """Load every CSV in a folder into memory so you can browse between
+        files/larvae, pick an epsilon visually, then process them all."""
+        in_dir = QFileDialog.getExistingDirectory(
+            self, 'Select folder containing CSV files')
+        if not in_dir:
+            return
+
+        csv_files = [f for f in sorted(os.listdir(in_dir))
+                     if f.lower().endswith('.csv')]
+        if not csv_files:
+            QMessageBox.warning(self, 'No CSV files',
+                                'No .csv files were found in that folder.')
+            return
+
+        progress = self._make_progress('Loading files', len(csv_files))
+        entries, errors, cancelled = [], [], False
+        for i, fname in enumerate(csv_files):
+            if progress.wasCanceled():
+                cancelled = True
+                break
+            progress.setLabelText(f'Loading {fname}  ({i + 1}/{len(csv_files)})')
+            progress.setValue(i)
+            QApplication.processEvents()
+            path = os.path.join(in_dir, fname)
+            try:
+                entries.append(self._load_entry(path))
+            except Exception as e:
+                errors.append(f'{fname}: {e}')
+        progress.setValue(len(csv_files))   # closes the dialog
+
+        if not entries:
+            QMessageBox.warning(self, 'Nothing loaded',
+                                'None of the CSV files could be loaded.\n\n'
+                                + '\n'.join(errors))
+            return
+
+        self._set_loaded_files(entries)
+
+        note = f'Loaded {len(entries)} of {len(csv_files)} file(s).'
+        if cancelled:
+            note += ' (Loading cancelled — only the files above are available.)'
+        if errors:
+            QMessageBox.warning(self, 'Some files failed to load',
+                                note + f'\n\n{len(errors)} failed:\n'
+                                + '\n'.join(errors))
+        else:
+            self.statusBar.showMessage(
+                note + ' Browse, set epsilon, then "Process Loaded Files".')
+
+    def _load_entry(self, path):
+        """Load one CSV into an entry dict. load_data sets self.global_bounds
+        (a fresh dict each call) as a side effect, which we capture per file."""
+        data = self.load_data(path)
+        return {
+            'name': os.path.splitext(os.path.basename(path))[0],
+            'path': path,
+            'data': data,
+            'bounds': self.global_bounds
+        }
+
+    def _set_loaded_files(self, entries):
+        """Populate the file selector from a list of entries and show the first."""
+        self.loaded_files = entries
+        self.file_combo.blockSignals(True)
+        self.file_combo.clear()
+        self.file_combo.addItems([e['name'] for e in entries])
+        self.file_combo.setCurrentIndex(0)
+        self.file_combo.blockSignals(False)
+        self.select_file(0)
+
+    def select_file(self, index):
+        """Switch the active file to the one at `index` and refresh the view."""
+        if index < 0 or index >= len(self.loaded_files):
+            return
+        entry = self.loaded_files[index]
+        self.data = entry['data']
+        self.csv_filename = entry['name']
+        self.global_bounds = entry['bounds']
+
+        # reflect this file's bounds in the axis spin boxes
+        self.xmin_spin.setValue(self.global_bounds['x_min'])
+        self.xmax_spin.setValue(self.global_bounds['x_max'])
+        self.ymin_spin.setValue(self.global_bounds['y_min'])
+        self.ymax_spin.setValue(self.global_bounds['y_max'])
+
+        # reset view state for the new file
+        self._zoomed_in = False
+        self._custom_limits = None
+        self.current_larva = 0
+
+        # repopulate the larva selector without firing its signal mid-update
+        self.larva_combo.blockSignals(True)
+        self.larva_combo.clear()
+        self.larva_combo.addItems([f'Larva {i}' for i in range(len(self.data))])
+        self.larva_combo.setCurrentIndex(0)
+        self.larva_combo.blockSignals(False)
+
+        self.statusBar.showMessage(
+            f'File: {entry["name"]}  ({index + 1}/{len(self.loaded_files)})')
+        self.update_plot()
 
     def setup_ui(self):
         self.setWindowTitle('Trajectory Analyzer')
@@ -113,8 +226,10 @@ class TrajectoryViewer(QMainWindow):
         file_menu = menubar.addMenu('File')
         open_action = file_menu.addAction('Open CSV')
         open_action.triggered.connect(self.open_file)
-        batch_action = file_menu.addAction('Batch Process Folder...')
-        batch_action.triggered.connect(self.batch_process_folder)
+        load_folder_action = file_menu.addAction('Load Folder...')
+        load_folder_action.triggered.connect(self.load_folder)
+        process_action = file_menu.addAction('Process Loaded Files...')
+        process_action.triggered.connect(self.process_loaded_files)
 
         self.statusBar = self.statusBar()
         self.statusBar.showMessage('No file loaded')
@@ -210,6 +325,11 @@ class TrajectoryViewer(QMainWindow):
         reset_zoom_btn.clicked.connect(self.reset_zoom)
         controls.addWidget(reset_zoom_btn)
     
+        # File selector (populated when a file or folder is loaded)
+        self.file_combo = QComboBox()
+        controls.addWidget(self.file_combo)
+        self.file_combo.currentIndexChanged.connect(self.select_file)
+
         # Larva selector
         self.larva_combo = QComboBox()
         controls.addWidget(self.larva_combo)
@@ -223,6 +343,9 @@ class TrajectoryViewer(QMainWindow):
         export_stats_btn.clicked.connect(self.export_all_stats)
         export_layout.addWidget(export_plot_btn)
         export_layout.addWidget(export_stats_btn)
+        process_btn = QPushButton('Process Loaded Files (current ε)')
+        process_btn.clicked.connect(self.process_loaded_files)
+        export_layout.addWidget(process_btn)
         controls.addLayout(export_layout)
     
         # Stats label
@@ -332,72 +455,77 @@ class TrajectoryViewer(QMainWindow):
         self.current_larva = original_larva  # restore original selection
         return df_stats
 
-    def batch_process_folder(self):
-        """Run the same stats + turning-angle export on every CSV in a folder,
-        using the current epsilon/scale settings. Writes one
-        <name>_analysis.xlsx per input file, plus a combined batch_summary.xlsx
-        with all larvae from all files stacked together."""
-        in_dir = QFileDialog.getExistingDirectory(
-            self, 'Select folder containing CSV files')
-        if not in_dir:
+    def process_loaded_files(self):
+        """Export the same stats + turning-angle workbook for every file already
+        loaded in memory, using the CURRENT epsilon (the one you settled on while
+        browsing). Writes one <name>_analysis.xlsx per file plus a combined
+        batch_summary.xlsx."""
+        if not self.loaded_files:
+            QMessageBox.warning(
+                self, 'No files loaded',
+                'Load a file (Open CSV) or a folder (Load Folder) first.')
             return
-        
-        csv_files = [f for f in sorted(os.listdir(in_dir))
-                     if f.lower().endswith('.csv')]
-        if not csv_files:
-            QMessageBox.warning(self, 'No CSV files',
-                                'No .csv files were found in that folder.')
-            return
-        
+
         out_dir = QFileDialog.getExistingDirectory(
             self, 'Select output folder for analysis files')
         if not out_dir:
             return
-        
-        saved, errors, combined = [], [], []
-        for fname in csv_files:
-            path = os.path.join(in_dir, fname)
+
+        # remember what the user was viewing so we can restore it afterwards
+        current_index = self.file_combo.currentIndex()
+
+        progress = self._make_progress('Processing files', len(self.loaded_files))
+        saved, errors, combined, cancelled = [], [], [], False
+        for i, entry in enumerate(self.loaded_files):
+            if progress.wasCanceled():
+                cancelled = True
+                break
+            progress.setLabelText(
+                f'Processing {entry["name"]}  '
+                f'({i + 1}/{len(self.loaded_files)})')
+            progress.setValue(i)
+            QApplication.processEvents()
             try:
-                self.csv_filename = os.path.splitext(fname)[0]
-                self.data = self.load_data(path)
+                self.data = entry['data']
+                self.csv_filename = entry['name']
+                self.global_bounds = entry['bounds']
                 self.current_larva = 0
                 out_path = os.path.join(out_dir,
-                                        f'{self.csv_filename}_analysis.xlsx')
+                                        f"{entry['name']}_analysis.xlsx")
                 df_stats = self.write_analysis_workbook(out_path)
                 if df_stats is not None and not df_stats.empty:
                     df_stats = df_stats.copy()
-                    df_stats.insert(0, 'source_file', self.csv_filename)
+                    df_stats.insert(0, 'source_file', entry['name'])
                     combined.append(df_stats)
-                saved.append(fname)
-                self.statusBar.showMessage(
-                    f'Processed {len(saved)}/{len(csv_files)}: {fname}')
-                QApplication.processEvents()  # keep the UI responsive
+                saved.append(entry['name'])
             except Exception as e:
-                errors.append(f'{fname}: {e}')
-        
+                errors.append(f"{entry['name']}: {e}")
+
         # Combined summary across all files (one row per larva, tagged by file)
         if combined:
+            progress.setLabelText('Writing combined summary...')
+            QApplication.processEvents()
             try:
                 combined_df = pd.concat(combined, ignore_index=True)
                 combined_df.to_excel(
                     os.path.join(out_dir, 'batch_summary.xlsx'), index=False)
             except Exception as e:
                 errors.append(f'batch_summary.xlsx: {e}')
-        
-        # Refresh the larva selector / plot for the last loaded file
-        if self.data is not None:
-            self.larva_combo.clear()
-            self.larva_combo.addItems(
-                [f'Larva {i}' for i in range(len(self.data))])
-            self.update_plot()
-        
-        msg = (f'Batch complete: {len(saved)} of {len(csv_files)} file(s) '
-               f'processed with epsilon={self.epsilon}.')
+        progress.setValue(len(self.loaded_files))   # closes the dialog
+
+        # restore the file the user was viewing
+        if 0 <= current_index < len(self.loaded_files):
+            self.select_file(current_index)
+
+        msg = (f'Processed {len(saved)} of {len(self.loaded_files)} file(s) '
+               f'with epsilon={self.epsilon}.')
+        if cancelled:
+            msg += ' (Cancelled — remaining files were not processed.)'
         if errors:
             msg += '\n\nProblems:\n' + '\n'.join(errors)
-            QMessageBox.warning(self, 'Batch finished with errors', msg)
+            QMessageBox.warning(self, 'Processing finished with errors', msg)
         else:
-            QMessageBox.information(self, 'Batch complete', msg)
+            QMessageBox.information(self, 'Processing complete', msg)
         self.statusBar.showMessage(msg.splitlines()[0])
                 
     def update_epsilon(self):
