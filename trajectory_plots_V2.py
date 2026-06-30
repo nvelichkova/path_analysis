@@ -7,7 +7,7 @@ Created on Thu Feb 13 15:18:13 2025
 
 import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                           QWidget, QSlider, QPushButton, QLabel, QComboBox, QFileDialog, QCheckBox, QSpinBox, QDoubleSpinBox)
+                           QWidget, QSlider, QPushButton, QLabel, QComboBox, QFileDialog, QCheckBox, QSpinBox, QDoubleSpinBox, QMessageBox)
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.widgets import RectangleSelector
@@ -113,6 +113,8 @@ class TrajectoryViewer(QMainWindow):
         file_menu = menubar.addMenu('File')
         open_action = file_menu.addAction('Open CSV')
         open_action.triggered.connect(self.open_file)
+        batch_action = file_menu.addAction('Batch Process Folder...')
+        batch_action.triggered.connect(self.batch_process_folder)
 
         self.statusBar = self.statusBar()
         self.statusBar.showMessage('No file loaded')
@@ -246,78 +248,157 @@ class TrajectoryViewer(QMainWindow):
             print(f"Plot saved as {filename}")
 
     def export_all_stats(self):
+        if self.data is None:
+            QMessageBox.warning(self, 'No data', 'Please open a CSV file first.')
+            return
         default_filename = f'{self.csv_filename}_analysis.xlsx'
         filename, _ = QFileDialog.getSaveFileName(
             self, 'Export Stats', default_filename, 'Excel Files (*.xlsx)')
         if filename:
-            original_larva = self.current_larva  # save so we can restore at the end
-            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                all_data = []
-                for i in range(len(self.data)):
-                    self.current_larva = i
-                    coords = self.data[i]['coords']
-                    if len(coords) < 2:  # skip empty/trivial larvae
-                        print(f"Skipping larva {i}: insufficient data")
-                        continue
-                    stats, simple_traj = self.calculate_stats()
-                    stats['larva_idx'] = i
-                    all_data.append(stats)
-                
-                df_stats = pd.DataFrame(all_data)
-                df_stats.to_excel(writer, sheet_name='Summary_Stats', index=False)
-                
-                for i in range(len(self.data)):
-                    self.current_larva = i
-                    coords = self.data[i]['coords']
-                    if len(coords) < 2:  # skip empty/trivial larvae
-                        continue
-                    simple_traj = rdp(coords, epsilon=self.epsilon)
-                    turning_angles = self.calculate_turning_angles(simple_traj)
-                    
-                    turning_angles_deg = turning_angles * 180 / np.pi
-                    
-                    cw_turns = []
-                    ccw_turns = []
-                    
-                    for turn_num, angle in enumerate(turning_angles_deg, 1):
-                        if angle < 0:
-                            cw_turns.append({
-                                'original_turn_number': turn_num,
-                                'angle_degrees': angle,
-                                'direction': 'CW'
-                            })
-                        else:
-                            ccw_turns.append({
-                                'original_turn_number': turn_num,
-                                'angle_degrees': angle,
-                                'direction': 'CCW'
-                            })
-                    
-                    df_cw = pd.DataFrame(cw_turns)
-                    df_ccw = pd.DataFrame(ccw_turns)
-                    
-                    if not df_cw.empty:
-                        df_cw['direction_turn_number'] = range(1, len(df_cw) + 1)
-                    if not df_ccw.empty:
-                        df_ccw['direction_turn_number'] = range(1, len(df_ccw) + 1)
-                    
-                    df_angles = pd.concat([df_cw, df_ccw], ignore_index=True)
-                    
-                    # Only reorder columns if there is data (concat of two empty DFs has no columns)
-                    if not df_angles.empty:
-                        df_angles = df_angles[[
-                            'direction',
-                            'direction_turn_number',
-                            'original_turn_number',
-                            'angle_degrees'
-                        ]]
-                    
-                    sheet_name = f'Larva_{i}_Angles'
-                    df_angles.to_excel(writer, sheet_name=sheet_name, index=False)
-                
-            self.current_larva = original_larva  # restore original selection
+            self.write_analysis_workbook(filename)
             self.update_plot()
             print(f"Stats and turning angles exported to {filename}")
+
+    def write_analysis_workbook(self, filename):
+        """Write the per-larva stats + turning-angle workbook for the data
+        currently held in self.data. Shared by the single-file export and the
+        batch processor so both produce identical output. Returns the
+        Summary_Stats DataFrame (or None if there is no data)."""
+        original_larva = self.current_larva  # save so we can restore at the end
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            all_data = []
+            for i in range(len(self.data)):
+                self.current_larva = i
+                coords = self.data[i]['coords']
+                if len(coords) < 2:  # skip empty/trivial larvae
+                    print(f"Skipping larva {i}: insufficient data")
+                    continue
+                stats, simple_traj = self.calculate_stats()
+                stats['larva_idx'] = i
+                all_data.append(stats)
+            
+            df_stats = pd.DataFrame(all_data)
+            df_stats.to_excel(writer, sheet_name='Summary_Stats', index=False)
+            
+            for i in range(len(self.data)):
+                self.current_larva = i
+                coords = self.data[i]['coords']
+                if len(coords) < 2:  # skip empty/trivial larvae
+                    continue
+                simple_traj = rdp(coords, epsilon=self.epsilon)
+                turning_angles = self.calculate_turning_angles(simple_traj)
+                
+                turning_angles_deg = turning_angles * 180 / np.pi
+                
+                cw_turns = []
+                ccw_turns = []
+                
+                for turn_num, angle in enumerate(turning_angles_deg, 1):
+                    if angle < 0:
+                        cw_turns.append({
+                            'original_turn_number': turn_num,
+                            'angle_degrees': angle,
+                            'direction': 'CW'
+                        })
+                    else:
+                        ccw_turns.append({
+                            'original_turn_number': turn_num,
+                            'angle_degrees': angle,
+                            'direction': 'CCW'
+                        })
+                
+                df_cw = pd.DataFrame(cw_turns)
+                df_ccw = pd.DataFrame(ccw_turns)
+                
+                if not df_cw.empty:
+                    df_cw['direction_turn_number'] = range(1, len(df_cw) + 1)
+                if not df_ccw.empty:
+                    df_ccw['direction_turn_number'] = range(1, len(df_ccw) + 1)
+                
+                df_angles = pd.concat([df_cw, df_ccw], ignore_index=True)
+                
+                # Only reorder columns if there is data (concat of two empty DFs has no columns)
+                if not df_angles.empty:
+                    df_angles = df_angles[[
+                        'direction',
+                        'direction_turn_number',
+                        'original_turn_number',
+                        'angle_degrees'
+                    ]]
+                
+                sheet_name = f'Larva_{i}_Angles'
+                df_angles.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+        self.current_larva = original_larva  # restore original selection
+        return df_stats
+
+    def batch_process_folder(self):
+        """Run the same stats + turning-angle export on every CSV in a folder,
+        using the current epsilon/scale settings. Writes one
+        <name>_analysis.xlsx per input file, plus a combined batch_summary.xlsx
+        with all larvae from all files stacked together."""
+        in_dir = QFileDialog.getExistingDirectory(
+            self, 'Select folder containing CSV files')
+        if not in_dir:
+            return
+        
+        csv_files = [f for f in sorted(os.listdir(in_dir))
+                     if f.lower().endswith('.csv')]
+        if not csv_files:
+            QMessageBox.warning(self, 'No CSV files',
+                                'No .csv files were found in that folder.')
+            return
+        
+        out_dir = QFileDialog.getExistingDirectory(
+            self, 'Select output folder for analysis files')
+        if not out_dir:
+            return
+        
+        saved, errors, combined = [], [], []
+        for fname in csv_files:
+            path = os.path.join(in_dir, fname)
+            try:
+                self.csv_filename = os.path.splitext(fname)[0]
+                self.data = self.load_data(path)
+                self.current_larva = 0
+                out_path = os.path.join(out_dir,
+                                        f'{self.csv_filename}_analysis.xlsx')
+                df_stats = self.write_analysis_workbook(out_path)
+                if df_stats is not None and not df_stats.empty:
+                    df_stats = df_stats.copy()
+                    df_stats.insert(0, 'source_file', self.csv_filename)
+                    combined.append(df_stats)
+                saved.append(fname)
+                self.statusBar.showMessage(
+                    f'Processed {len(saved)}/{len(csv_files)}: {fname}')
+                QApplication.processEvents()  # keep the UI responsive
+            except Exception as e:
+                errors.append(f'{fname}: {e}')
+        
+        # Combined summary across all files (one row per larva, tagged by file)
+        if combined:
+            try:
+                combined_df = pd.concat(combined, ignore_index=True)
+                combined_df.to_excel(
+                    os.path.join(out_dir, 'batch_summary.xlsx'), index=False)
+            except Exception as e:
+                errors.append(f'batch_summary.xlsx: {e}')
+        
+        # Refresh the larva selector / plot for the last loaded file
+        if self.data is not None:
+            self.larva_combo.clear()
+            self.larva_combo.addItems(
+                [f'Larva {i}' for i in range(len(self.data))])
+            self.update_plot()
+        
+        msg = (f'Batch complete: {len(saved)} of {len(csv_files)} file(s) '
+               f'processed with epsilon={self.epsilon}.')
+        if errors:
+            msg += '\n\nProblems:\n' + '\n'.join(errors)
+            QMessageBox.warning(self, 'Batch finished with errors', msg)
+        else:
+            QMessageBox.information(self, 'Batch complete', msg)
+        self.statusBar.showMessage(msg.splitlines()[0])
                 
     def update_epsilon(self):
         self.epsilon = self.epsilon_slider.value() / 10
