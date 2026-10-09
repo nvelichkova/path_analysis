@@ -31,50 +31,98 @@ class TrajectoryViewer(QMainWindow):
         self._zoom_active = False
         self._zoomed_in = False
         self._custom_limits = None
-        self.loaded_files = []   # list of dicts: {name, path, data, bounds}
+        self.loaded_files = []   # list of dicts: {name, path, data, bounds, note}
+        self._load_note = ''     # set by load_data, captured by _load_entry
         self.setup_ui()
         self.csv_filename = None
 
+    @staticmethod
+    def _short_error(e, limit=400):
+        """Parsing errors can carry an entire 15k-row column in their message.
+        Collapse to one line and truncate so the dialog stays readable."""
+        text = ' '.join(str(e).split())
+        if len(text) > limit:
+            text = text[:limit].rstrip() + ' ...'
+        return text
+
     def load_data(self, csv_file):
         print("Reading CSV file...")
-        data_aux = pd.read_csv(csv_file, dtype={0: str})
-        data_aux.iloc[:, 1:] = data_aux.iloc[:, 1:].astype(float)
-        
+        raw = pd.read_csv(csv_file)
+
+        if raw.shape[1] < 2:
+            raise ValueError('expected a label column plus at least one larva '
+                             f'column, found {raw.shape[1]}')
+
+        # Column 0 holds the row labels (mom_x / mom_y / ...); everything else
+        # is coordinate data.
+        #
+        # Build a NEW numeric frame rather than assigning floats back into
+        # `raw` in place. A file re-saved by Excel usually comes back with the
+        # trailing ".0" stripped, so those columns parse as int64, and pandas
+        # rejects an in-place float assignment into an int64 column. Parsing
+        # the values out separately makes the incoming dtype irrelevant.
+        labels = raw.iloc[:, 0].astype(str)
+        values = raw.iloc[:, 1:].apply(pd.to_numeric, errors='coerce')
+
+        # Deleting columns in Excel often leaves the used range intact, so the
+        # saved file carries empty trailing columns ("Unnamed: 12", nothing but
+        # commas). Drop them instead of showing them as phantom larvae.
+        non_empty = [c for c in values.columns if not values[c].isna().all()]
+        n_dropped = values.shape[1] - len(non_empty)
+        values = values[non_empty]
+        if values.shape[1] == 0:
+            raise ValueError('no larva column contains any numeric data')
+
+        x_rows = labels.str.contains('mom_x', case=False, na=False).to_numpy()
+        y_rows = labels.str.contains('mom_y', case=False, na=False).to_numpy()
+        if not x_rows.any() or not y_rows.any():
+            raise ValueError("no 'mom_x' / 'mom_y' rows found in the first "
+                             "column - is the label column still present?")
+        if x_rows.sum() != y_rows.sum():
+            raise ValueError(f'{x_rows.sum()} mom_x rows but {y_rows.sum()} '
+                             'mom_y rows - the file looks truncated')
+
+        self._load_note = (f'{n_dropped} empty column(s) ignored.'
+                           if n_dropped else '')
+
         processed_data = []
-        n_larvae = data_aux.shape[1] - 1
-        
+        n_larvae = values.shape[1]
+
         global_min_x = float('inf')
         global_max_x = float('-inf')
         global_min_y = float('inf')
         global_max_y = float('-inf')
-        
+
         for i in tqdm(range(n_larvae)):
-            x_coords = data_aux[data_aux.iloc[:, 0].str.contains('mom_x', case=False, na=False)]
-            y_coords = data_aux[data_aux.iloc[:, 0].str.contains('mom_y', case=False, na=False)]
-            
-            x_data = x_coords.iloc[:, i + 1].values / self.scale
-            y_data = y_coords.iloc[:, i + 1].values / self.scale
-            
+            column = values.iloc[:, i].to_numpy(dtype=float)
+
+            x_data = column[x_rows] / self.scale
+            y_data = column[y_rows] / self.scale
+
             valid_mask = ~np.isnan(x_data) & ~np.isnan(y_data)
             x_clean = x_data[valid_mask]
             y_clean = y_data[valid_mask]
             coords = np.column_stack([x_clean, y_clean])
-            
+
             if len(x_clean) > 0:
                 global_min_x = min(global_min_x, np.min(x_clean))
                 global_max_x = max(global_max_x, np.max(x_clean))
                 global_min_y = min(global_min_y, np.min(y_clean))
                 global_max_y = max(global_max_y, np.max(y_clean))
-            
+
             distances = np.sqrt(np.sum(np.diff(coords, axis=0)**2, axis=1)) if len(coords) > 1 else np.array([])
-            
+
             processed_data.append({
                 'coords': coords,
                 'distances': distances,
                 'total_points': len(x_clean),
                 'total_distance': np.sum(distances)
             })
-        
+
+        if not np.isfinite(global_min_x) or not np.isfinite(global_min_y):
+            raise ValueError('no valid x/y coordinate pairs found - every '
+                             'value was blank or non-numeric')
+
         overall_min = min(global_min_x, global_min_y)
         overall_max = max(global_max_x, global_max_y)
         
@@ -102,7 +150,9 @@ class TrajectoryViewer(QMainWindow):
             try:
                 entry = self._load_entry(filename)
             except Exception as e:
-                QMessageBox.warning(self, 'Load failed', f'{os.path.basename(filename)}: {e}')
+                QMessageBox.warning(
+                    self, 'Load failed',
+                    f'{os.path.basename(filename)}:\n\n{self._short_error(e)}')
                 return
             self._set_loaded_files([entry])
 
@@ -144,7 +194,7 @@ class TrajectoryViewer(QMainWindow):
             try:
                 entries.append(self._load_entry(path))
             except Exception as e:
-                errors.append(f'{fname}: {e}')
+                errors.append(f'{fname}: {self._short_error(e, 200)}')
         progress.setValue(len(csv_files))   # closes the dialog
 
         if not entries:
@@ -169,12 +219,14 @@ class TrajectoryViewer(QMainWindow):
     def _load_entry(self, path):
         """Load one CSV into an entry dict. load_data sets self.global_bounds
         (a fresh dict each call) as a side effect, which we capture per file."""
+        self._load_note = ''
         data = self.load_data(path)
         return {
             'name': os.path.splitext(os.path.basename(path))[0],
             'path': path,
             'data': data,
-            'bounds': self.global_bounds
+            'bounds': self.global_bounds,
+            'note': self._load_note
         }
 
     def _set_loaded_files(self, entries):
@@ -214,8 +266,10 @@ class TrajectoryViewer(QMainWindow):
         self.larva_combo.setCurrentIndex(0)
         self.larva_combo.blockSignals(False)
 
-        self.statusBar.showMessage(
-            f'File: {entry["name"]}  ({index + 1}/{len(self.loaded_files)})')
+        message = f'File: {entry["name"]}  ({index + 1}/{len(self.loaded_files)})'
+        if entry.get('note'):
+            message += f'  —  {entry["note"]}'
+        self.statusBar.showMessage(message)
         self.update_plot()
 
     def setup_ui(self):
@@ -499,7 +553,7 @@ class TrajectoryViewer(QMainWindow):
                     combined.append(df_stats)
                 saved.append(entry['name'])
             except Exception as e:
-                errors.append(f"{entry['name']}: {e}")
+                errors.append(f"{entry['name']}: {self._short_error(e, 200)}")
 
         # Combined summary across all files (one row per larva, tagged by file)
         if combined:
@@ -510,7 +564,7 @@ class TrajectoryViewer(QMainWindow):
                 combined_df.to_excel(
                     os.path.join(out_dir, 'batch_summary.xlsx'), index=False)
             except Exception as e:
-                errors.append(f'batch_summary.xlsx: {e}')
+                errors.append(f'batch_summary.xlsx: {self._short_error(e, 200)}')
         progress.setValue(len(self.loaded_files))   # closes the dialog
 
         # restore the file the user was viewing
